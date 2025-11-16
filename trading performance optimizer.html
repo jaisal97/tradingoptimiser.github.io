@@ -1,0 +1,1086 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trading Performance Optimizer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    html {
+      height: 100%;
+    }
+    .stat-card {
+      transition: transform 0.2s;
+    }
+    .stat-card:hover {
+      transform: translateY(-2px);
+    }
+    .trade-row {
+      transition: background-color 0.2s;
+    }
+    .trade-row:hover {
+      background-color: rgba(255, 255, 255, 0.03);
+    }
+  </style>
+ </head>
+ <body>
+  <div id="app" class="min-h-full"></div>
+  <script>
+    /* -----------------------
+       Lightweight local data SDK
+       ----------------------- */
+    (function(){
+      const STORAGE_KEY = 'tpo_trades_v1';
+      window.dataSdk = {
+        async init(handler) {
+          const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+          const normalized = data.map(t => ({ ...t, timestamp: t.timestamp || new Date().toISOString() }));
+          setTimeout(() => handler.onDataChanged(normalized), 0);
+          return { isOk: true };
+        },
+        async create(trade) {
+          try {
+            const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+            data.push(trade);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+            if (window._tpo_data_handler) window._tpo_data_handler.onDataChanged(data);
+            return { isOk: true, created: trade };
+          } catch (e) {
+            return { isOk: false, error: e.message };
+          }
+        },
+        async delete(trade) {
+          try {
+            const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+            const filtered = data.filter(t => t.id !== trade.id);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
+            if (window._tpo_data_handler) window._tpo_data_handler.onDataChanged(filtered);
+            return { isOk: true };
+          } catch (e) {
+            return { isOk: false, error: e.message };
+          }
+        },
+        async list() {
+          return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+        },
+        async replaceAll(newArray = []) {
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(newArray));
+            if (window._tpo_data_handler) window._tpo_data_handler.onDataChanged(newArray);
+            return { isOk: true };
+          } catch(e) {
+            return { isOk: false, error: e.message };
+          }
+        }
+      };
+    })();
+  </script>
+
+  <script>
+    // Application code (standalone)
+    const defaultConfig = {
+      background_color: "#0f172a",
+      surface_color: "#1e293b",
+      text_color: "#f1f5f9",
+      primary_action_color: "#3b82f6",
+      secondary_action_color: "#64748b",
+      app_title: "Trading Performance Optimizer",
+      target_win_rate_label: "Target Win Rate",
+      add_trade_button: "Log New Trade",
+      font_family: "Inter",
+      font_size: 16
+    };
+
+    let trades = [];
+    let showAddForm = false;
+    let freezeDate = false;
+    let frozenDate = '';
+    let showCalculator = false;
+    let calculatedPnL = 0;
+    let lastBackupDate = localStorage.getItem('tpo_last_backup_date') || '';
+    let showDayAnalyzer = false;
+    let selectedAnalysisDate = new Date().toISOString().split('T')[0];
+
+    const dataHandler = {
+      onDataChanged(data) {
+        trades = (data || []).slice().sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        checkAutoBackup();
+        render();
+      }
+    };
+
+    window._tpo_data_handler = dataHandler;
+
+    function checkAutoBackup() {
+      const today = new Date();
+      const dayOfWeek = today.getDay();
+      const todayString = today.toISOString().split('T')[0];
+
+      if (dayOfWeek === 5 && lastBackupDate !== todayString && trades.length > 0) {
+        performAutoBackup();
+      }
+    }
+
+    function performAutoBackup() {
+      const today = new Date();
+      const todayString = today.toISOString().split('T')[0];
+
+      const backupData = {
+        backup_date: todayString,
+        backup_type: "auto_friday",
+        total_trades: trades.length,
+        data: trades
+      };
+
+      const dataStr = JSON.stringify(backupData, null, 2);
+      const dataBlob = new Blob([dataStr], { type: 'application/json' });
+
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(dataBlob);
+      link.download = `trading_backup_${todayString}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      lastBackupDate = todayString;
+      localStorage.setItem('tpo_last_backup_date', todayString);
+      showNotification('📁 Auto backup completed! File downloaded.', 'success');
+    }
+
+    function downloadBackup() {
+      if (trades.length === 0) {
+        showNotification('⚠️ No trades to backup', 'warning');
+        return;
+      }
+
+      const today = new Date();
+      const todayString = today.toISOString().split('T')[0];
+
+      const backupData = {
+        backup_date: todayString,
+        backup_type: "manual",
+        total_trades: trades.length,
+        data: trades
+      };
+
+      const dataStr = JSON.stringify(backupData, null, 2);
+      const dataBlob = new Blob([dataStr], { type: 'application/json' });
+
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(dataBlob);
+      link.download = `trading_backup_${todayString}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      localStorage.setItem('tpo_last_backup_date', todayString);
+      lastBackupDate = todayString;
+      showNotification('📁 Backup downloaded successfully!', 'success');
+    }
+
+    async function uploadBackup(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      if (!file.name.endsWith('.json')) {
+        showNotification('⚠️ Please select a JSON file', 'error');
+        return;
+      }
+
+      try {
+        const text = await file.text();
+        const backupData = JSON.parse(text);
+
+        if (!backupData.data || !Array.isArray(backupData.data)) {
+          throw new Error('Invalid backup format');
+        }
+
+        const confirmRestore = confirm(`This will restore ${backupData.total_trades || backupData.data.length} trades from ${backupData.backup_date || 'unknown date'}. This will replace all current data. Continue?`);
+
+        if (!confirmRestore) {
+          event.target.value = '';
+          return;
+        }
+
+        await window.dataSdk.replaceAll(backupData.data.map(t => ({ ...t, timestamp: t.timestamp || new Date().toISOString() })));
+
+        showNotification(`✅ Successfully restored ${backupData.data.length} trades!`, 'success');
+      } catch (error) {
+        console.error(error);
+        showNotification('❌ Failed to restore backup. Invalid file format.', 'error');
+      }
+
+      event.target.value = '';
+    }
+
+    function showNotification(message, type = 'info') {
+      const notification = document.createElement('div');
+      const bgColor = type === 'success' ? '#10b981' : type === 'error' ? '#ef4444' : type === 'warning' ? '#f59e0b' : '#3b82f6';
+
+      notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: ${bgColor};
+        color: white;
+        padding: 12px 20px;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        z-index: 10000;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      `;
+
+      notification.textContent = message;
+      document.body.appendChild(notification);
+
+      setTimeout(() => {
+        if (notification.parentNode) document.body.removeChild(notification);
+      }, 3500);
+    }
+
+    // Fixed calculateMetrics: compute avg reward from winning trades and avg risk from losing trades
+    function calculateMetrics(tradesData = trades) {
+      if (tradesData.length === 0) {
+        return {
+          winRate: 0,
+          avgRiskReward: 0,
+          totalTrades: 0,
+          wins: 0,
+          losses: 0,
+          totalPL: 0,
+          recommendedStop: 0,
+          recommendedTarget: 0,
+          optimizationScore: 0,
+          strategy: "No data available"
+        };
+      }
+
+      const wins = tradesData.filter(t => (t.profit_loss || 0) > 0).length;
+      const losses = tradesData.filter(t => (t.profit_loss || 0) < 0).length;
+      const winRate = (wins / tradesData.length) * 100;
+
+      // Sum of positive PL (profits) and sum of absolute negative PL (losses)
+      const sumProfits = tradesData.reduce((s, t) => s + (t.profit_loss > 0 ? t.profit_loss : 0), 0);
+      const sumLossesAbs = tradesData.reduce((s, t) => s + (t.profit_loss < 0 ? Math.abs(t.profit_loss) : 0), 0);
+
+      // Average reward = average profit on winning trades (fallback to overall avg absolute PL)
+      const avgReward = wins > 0 ? (sumProfits / wins) : (tradesData.reduce((s,t)=>s+Math.abs(t.profit_loss||0),0) / tradesData.length || 0);
+
+      // Average risk = average absolute loss on losing trades (fallback to overall avg absolute PL)
+      const avgRisk = losses > 0 ? (sumLossesAbs / losses) : (tradesData.reduce((s,t)=>s+Math.abs(t.profit_loss||0),0) / tradesData.length || 0);
+
+      const avgRiskReward = avgRisk > 0 ? (avgReward / avgRisk) : (avgReward > 0 ? Infinity : 0);
+
+      const totalPL = tradesData.reduce((sum, t) => sum + (t.profit_loss || 0), 0);
+
+      const targetWinRate = 66;
+      const targetRR = 2;
+
+      let recommendedStop = avgRisk;
+      let recommendedTarget = avgReward;
+      let strategy = "";
+
+      if (winRate < targetWinRate) {
+        const winRateDeficit = targetWinRate - winRate;
+        const targetReduction = Math.min(0.5, winRateDeficit / 100);
+        recommendedTarget = avgReward * (1 - targetReduction);
+        recommendedStop = avgRisk;
+        strategy = `Reducing targets by ${(targetReduction * 100).toFixed(0)}% to improve win rate from ${winRate.toFixed(1)}% to 66%`;
+      }
+
+      if (avgRiskReward < targetRR) {
+        const rrDeficit = targetRR - (isFinite(avgRiskReward) ? avgRiskReward : 0);
+
+        if (winRate >= targetWinRate) {
+          recommendedTarget = recommendedStop * targetRR;
+          strategy = `Win rate achieved! Widening targets to reach 1:2 risk-reward ratio`;
+        } else {
+          const stopReduction = Math.min(0.3, rrDeficit / 4);
+          recommendedStop = avgRisk * (1 - stopReduction);
+          recommendedTarget = recommendedStop * targetRR;
+          strategy = `Tightening stops by ${(stopReduction * 100).toFixed(0)}% and adjusting targets to maintain 1:2 ratio while improving win rate`;
+        }
+      }
+
+      if (winRate >= targetWinRate - 5 && avgRiskReward >= targetRR - 0.2) {
+        recommendedStop = avgRisk;
+        recommendedTarget = avgRisk * targetRR;
+        strategy = `Fine-tuning: Maintaining current stops, setting targets at 1:2 ratio`;
+      }
+
+      const winRateScore = Math.max(0, 100 - Math.abs(winRate - targetWinRate) * 2);
+      const rrScore = Math.max(0, 100 - Math.abs((isFinite(avgRiskReward) ? avgRiskReward : targetRR) - targetRR) * 30);
+      const optimizationScore = (winRateScore + rrScore) / 2;
+
+      return {
+        winRate,
+        avgRiskReward: isFinite(avgRiskReward) ? avgRiskReward : targetRR,
+        totalTrades: tradesData.length,
+        wins,
+        losses,
+        totalPL,
+        recommendedStop,
+        recommendedTarget,
+        optimizationScore,
+        strategy
+      };
+    }
+
+    function getDayTrades(date) {
+      const targetDate = new Date(date).toDateString();
+      return trades.filter(trade => new Date(trade.timestamp).toDateString() === targetDate)
+                   .sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
+    }
+
+    function calculateProgressiveMetrics(dayTrades) {
+      const progressiveData = [];
+
+      for (let i = 0; i < dayTrades.length; i++) {
+        const tradesUpToNow = dayTrades.slice(0, i + 1);
+        const metrics = calculateMetrics(tradesUpToNow);
+
+        progressiveData.push({
+          tradeNumber: i + 1,
+          trade: dayTrades[i],
+          cumulativeMetrics: metrics,
+          recommendedStop: metrics.recommendedStop,
+          recommendedTarget: metrics.recommendedTarget,
+          strategy: metrics.strategy
+        });
+      }
+
+      return progressiveData;
+    }
+
+    async function addTrade(event) {
+      event.preventDefault();
+
+      if (trades.length >= 999) {
+        alert("Maximum limit of 999 trades reached. Please delete some trades first.");
+        return;
+      }
+
+      const formData = new FormData(event.target);
+      const tradeDate = freezeDate ? frozenDate : formData.get('trade_date');
+      const profitLoss = parseFloat(formData.get('profit_loss'));
+
+      const isWin = profitLoss > 0;
+
+      const riskAmount = Math.abs(profitLoss);
+      const rewardAmount = Math.abs(profitLoss);
+
+      const trade = {
+        id: Date.now().toString() + Math.random().toString(36).slice(2,6),
+        entry_price: 0,
+        exit_price: 0,
+        position_type: isWin ? 'win' : 'loss',
+        outcome: isWin ? 'win' : 'loss',
+        profit_loss: profitLoss,
+        risk_amount: riskAmount,
+        reward_amount: rewardAmount,
+        timestamp: new Date(tradeDate).toISOString()
+      };
+
+      const button = event.target.querySelector('button[type="submit"]');
+      button.disabled = true;
+      button.textContent = 'Adding...';
+
+      const result = await window.dataSdk.create(trade);
+
+      button.disabled = false;
+      button.textContent = 'Add Trade';
+
+      if (result.isOk) {
+        showAddForm = false;
+        event.target.reset();
+        render();
+      } else {
+        alert('Failed to add trade. Please try again.');
+      }
+    }
+
+    async function logCalculatedTrade() {
+      if (trades.length >= 999) {
+        alert("Maximum limit of 999 trades reached. Please delete some trades first.");
+        return;
+      }
+
+      const tradeDate = document.getElementById('calc-trade-date').value;
+      if (!tradeDate) {
+        alert('Please select a trade date');
+        return;
+      }
+
+      const profitLoss = calculatedPnL;
+      const isWin = profitLoss > 0;
+
+      const trade = {
+        id: Date.now().toString() + Math.random().toString(36).slice(2,6),
+        entry_price: 0,
+        exit_price: 0,
+        position_type: isWin ? 'win' : 'loss',
+        outcome: isWin ? 'win' : 'loss',
+        profit_loss: profitLoss,
+        risk_amount: Math.abs(profitLoss),
+        reward_amount: Math.abs(profitLoss),
+        timestamp: new Date(tradeDate).toISOString()
+      };
+
+      const button = document.getElementById('logTradeBtn');
+      button.disabled = true;
+      button.textContent = 'Logging...';
+
+      const result = await window.dataSdk.create(trade);
+
+      if (result.isOk) {
+        showCalculator = false;
+        calculatedPnL = 0;
+        render();
+      } else {
+        alert('Failed to log trade. Please try again.');
+        button.disabled = false;
+        button.textContent = '📝 Log This Trade';
+      }
+    }
+
+    async function deleteTrade(trade) {
+      const confirmDel = confirm('Delete this trade?');
+      if (!confirmDel) return;
+      const result = await window.dataSdk.delete(trade);
+      if (!result.isOk) {
+        alert('Failed to delete trade. Please try again.');
+      } else {
+        render();
+      }
+    }
+
+    function calculatePnL(event) {
+      event.preventDefault();
+      const formData = new FormData(event.target);
+      const buyPrice = parseFloat(formData.get('buy_price'));
+      const sellPrice = parseFloat(formData.get('sell_price'));
+      const quantity = parseFloat(formData.get('quantity'));
+
+      if (isNaN(buyPrice) || isNaN(sellPrice) || isNaN(quantity)) {
+        return;
+      }
+
+      const pnl = (sellPrice - buyPrice) * quantity;
+      const pnlPercentage = ((sellPrice - buyPrice) / buyPrice) * 100;
+
+      calculatedPnL = pnl;
+
+      const resultDiv = document.getElementById('pnl-result');
+      if (resultDiv) {
+        resultDiv.innerHTML = `
+          <div style="text-align: center; padding: 16px; background: ${pnl >= 0 ? '#10b98120' : '#ef444420'}; border-radius: 8px; margin-top: 16px;">
+            <div style="font-size: 18px; font-weight: 700; color: ${pnl >= 0 ? '#10b981' : '#ef4444'};">
+              ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+            </div>
+            <div style="font-size: 14px; opacity: 0.8; margin-top: 4px;">
+              ${pnlPercentage >= 0 ? '+' : ''}${pnlPercentage.toFixed(2)}%
+            </div>
+          </div>
+        `;
+      }
+
+      const logSection = document.getElementById('log-trade-section');
+      if (logSection) {
+        logSection.style.display = 'block';
+        const dateInput = document.getElementById('calc-trade-date');
+        if (dateInput && !dateInput.value) {
+          dateInput.value = new Date().toISOString().split('T')[0];
+        }
+      }
+    }
+
+    function render() {
+      const config = defaultConfig;
+      const metrics = calculateMetrics();
+
+      const baseFont = config.font_size || defaultConfig.font_size;
+      const customFont = config.font_family || defaultConfig.font_family;
+      const fontStack = `${customFont}, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
+
+      const bgColor = config.background_color || defaultConfig.background_color;
+      const surfaceColor = config.surface_color || defaultConfig.surface_color;
+      const textColor = config.text_color || defaultConfig.text_color;
+      const primaryColor = config.primary_action_color || defaultConfig.primary_action_color;
+      const secondaryColor = config.secondary_action_color || defaultConfig.secondary_action_color;
+
+      const app = document.getElementById('app');
+      app.style.backgroundColor = bgColor;
+      app.style.color = textColor;
+      app.style.fontFamily = fontStack;
+      app.style.fontSize = `${baseFont}px`;
+      app.style.padding = '24px';
+      app.style.minHeight = '100%';
+
+      app.innerHTML = `
+        <div style="max-width: 1200px; margin: 0 auto;">
+          <!-- Header -->
+          <div style="margin-bottom: 32px;">
+            <h1 style="font-size: ${baseFont * 2}px; font-weight: 700; margin: 0 0 8px 0; font-family: ${fontStack};">
+              ${config.app_title}
+            </h1>
+            <p style="font-size: ${baseFont * 0.9}px; opacity: 0.7; margin: 0; font-family: ${fontStack};">
+              Optimize your trading strategy for 1:2 risk-reward and 66% win rate
+            </p>
+          </div>
+
+          <!-- Metrics Grid -->
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 32px;">
+            <div class="stat-card" style="background: ${surfaceColor}; padding: 20px; border-radius: 12px;">
+              <div style="font-size: ${baseFont * 0.85}px; opacity: 0.7; margin-bottom: 8px; font-family: ${fontStack};">Win Rate</div>
+              <div style="font-size: ${baseFont * 1.75}px; font-weight: 700; font-family: ${fontStack};">
+                ${metrics.winRate.toFixed(1)}%
+              </div>
+              <div style="font-size: ${baseFont * 0.75}px; opacity: 0.6; margin-top: 4px; font-family: ${fontStack};">
+                ${defaultConfig.target_win_rate_label}: 66%
+              </div>
+            </div>
+
+            <div class="stat-card" style="background: ${surfaceColor}; padding: 20px; border-radius: 12px;">
+              <div style="font-size: ${baseFont * 0.85}px; opacity: 0.7; margin-bottom: 8px; font-family: ${fontStack};">Avg Risk:Reward</div>
+              <div style="font-size: ${baseFont * 1.75}px; font-weight: 700; font-family: ${fontStack};">
+                1:${metrics.avgRiskReward.toFixed(2)}
+              </div>
+              <div style="font-size: ${baseFont * 0.75}px; opacity: 0.6; margin-top: 4px; font-family: ${fontStack};">
+                Target: 1:2.00
+              </div>
+            </div>
+
+            <div class="stat-card" style="background: ${surfaceColor}; padding: 20px; border-radius: 12px;">
+              <div style="font-size: ${baseFont * 0.85}px; opacity: 0.7; margin-bottom: 8px; font-family: ${fontStack};">Total P/L</div>
+              <div style="font-size: ${baseFont * 1.75}px; font-weight: 700; color: ${metrics.totalPL >= 0 ? '#10b981' : '#ef4444'}; font-family: ${fontStack};">
+                ${metrics.totalPL >= 0 ? '+' : ''}${metrics.totalPL.toFixed(2)}
+              </div>
+              <div style="font-size: ${baseFont * 0.75}px; opacity: 0.6; margin-top: 4px; font-family: ${fontStack};">
+                ${metrics.wins}W / ${metrics.losses}L
+              </div>
+            </div>
+
+            <div class="stat-card" style="background: ${surfaceColor}; padding: 20px; border-radius: 12px;">
+              <div style="font-size: ${baseFont * 0.85}px; opacity: 0.7; margin-bottom: 8px; font-family: ${fontStack};">Optimization Score</div>
+              <div style="font-size: ${baseFont * 1.75}px; font-weight: 700; font-family: ${fontStack};">
+                ${metrics.optimizationScore.toFixed(0)}%
+              </div>
+              <div style="font-size: ${baseFont * 0.75}px; opacity: 0.6; margin-top: 4px; font-family: ${fontStack};">
+                System Performance
+              </div>
+            </div>
+          </div>
+
+          <!-- Recommendations -->
+          ${trades.length > 0 ? `
+            <div style="background: ${surfaceColor}; padding: 24px; border-radius: 12px; margin-bottom: 32px;">
+              <h2 style="font-size: ${baseFont * 1.25}px; font-weight: 600; margin: 0 0 16px 0; font-family: ${fontStack};">
+                📊 Dynamic Recommendations
+              </h2>
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px;">
+                <div>
+                  <div style="font-size: ${baseFont * 0.85}px; opacity: 0.7; margin-bottom: 4px; font-family: ${fontStack};">Recommended Stop Loss</div>
+                  <div style="font-size: ${baseFont * 1.5}px; font-weight: 600; color: ${primaryColor}; font-family: ${fontStack};">
+                    ${metrics.recommendedStop.toFixed(2)}
+                  </div>
+                </div>
+                <div>
+                  <div style="font-size: ${baseFont * 0.85}px; opacity: 0.7; margin-bottom: 4px; font-family: ${fontStack};">Recommended Take Profit</div>
+                  <div style="font-size: ${baseFont * 1.5}px; font-weight: 600; color: ${primaryColor}; font-family: ${fontStack};">
+                    ${metrics.recommendedTarget.toFixed(2)}
+                  </div>
+                </div>
+              </div>
+              <div style="background: ${bgColor}; padding: 16px; border-radius: 8px; margin-top: 16px;">
+                <div style="font-size: ${baseFont * 0.85}px; font-weight: 600; margin-bottom: 8px; color: ${primaryColor}; font-family: ${fontStack};">
+                  🎯 Current Strategy
+                </div>
+                <p style="font-size: ${baseFont * 0.85}px; opacity: 0.9; margin: 0; font-family: ${fontStack};">
+                  ${metrics.strategy}
+                </p>
+              </div>
+            </div>
+          ` : ''}
+
+          <!-- Action Buttons -->
+          <div style="display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px;">
+            <button id="toggleFormBtn" style="background: ${primaryColor}; color: white; padding: 12px 24px; border: none; border-radius: 8px; font-size: ${baseFont}px; font-weight: 600; cursor: pointer; font-family: ${fontStack};">
+              ${defaultConfig.add_trade_button}
+            </button>
+
+            <button id="dayAnalyzerBtn" style="background: #10b981; color: white; padding: 12px 20px; border: none; border-radius: 8px; font-size: ${baseFont * 0.9}px; font-weight: 600; cursor: pointer; font-family: ${fontStack}; display: flex; align-items: center; gap: 6px;">
+              📊 Day Analyzer
+            </button>
+
+            <button id="downloadBackupBtn" style="background: ${secondaryColor}; color: white; padding: 8px 12px; border: none; border-radius: 6px; font-size: ${baseFont * 0.8}px; font-weight: 600; cursor: pointer; font-family: ${fontStack}; min-width: 32px;">
+              B
+            </button>
+
+            <label for="uploadBackup" style="background: ${secondaryColor}; color: white; padding: 8px 12px; border: none; border-radius: 6px; font-size: ${baseFont * 0.8}px; font-weight: 600; cursor: pointer; font-family: ${fontStack}; min-width: 32px; display: inline-block; text-align: center;">
+              U
+              <input type="file" id="uploadBackup" accept=".json" style="display: none;">
+            </label>
+          </div>
+
+          <!-- Auto Backup Status -->
+          ${trades.length > 0 ? `
+            <div style="background: ${surfaceColor}; padding: 16px; border-radius: 8px; margin-bottom: 24px; border-left: 4px solid ${primaryColor};">
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                <span style="font-size: ${baseFont * 0.85}px; font-weight: 600; font-family: ${fontStack};">🔄 Auto Backup</span>
+                <span style="font-size: ${baseFont * 0.8}px; opacity: 0.7; font-family: ${fontStack};">Every Friday</span>
+              </div>
+              <p style="font-size: ${baseFont * 0.8}px; opacity: 0.8; margin: 0; font-family: ${fontStack};">
+                ${lastBackupDate ? `Last backup: ${new Date(lastBackupDate).toLocaleDateString()}` : 'No automatic backups yet'}
+              </p>
+            </div>
+          ` : ''}
+
+          <!-- Add Trade Form -->
+          ${showAddForm ? `
+            <div style="background: ${surfaceColor}; padding: 24px; border-radius: 12px; margin-bottom: 32px;">
+              <h3 style="font-size: ${baseFont * 1.25}px; font-weight: 600; margin: 0 0 20px 0; font-family: ${fontStack};">Add New Trade</h3>
+
+              <div style="background: ${bgColor}; padding: 16px; border-radius: 8px; margin-bottom: 20px;">
+                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+                  <label style="display: flex; align-items: center; gap: 8px; font-size: ${baseFont * 0.85}px; cursor: pointer; font-family: ${fontStack};">
+                    <input type="checkbox" id="freezeDateCheckbox" ${freezeDate ? 'checked' : ''} style="width: 16px; height: 16px;">
+                    <span>Freeze Date</span>
+                  </label>
+                  ${freezeDate ? `<span style="font-size: ${baseFont * 0.8}px; opacity: 0.7; font-family: ${fontStack};">📌 Date locked to ${frozenDate}</span>` : ''}
+                </div>
+                ${freezeDate ? `
+                  <button type="button" id="unfreezeBtn" style="background: ${secondaryColor}; color: white; padding: 6px 12px; border: none; border-radius: 6px; font-size: ${baseFont * 0.8}px; cursor: pointer; font-family: ${fontStack};">
+                    Unfreeze Date
+                  </button>
+                ` : ''}
+              </div>
+
+              <form id="addTradeForm">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 16px;">
+                  <div>
+                    <label style="display: block; font-size: ${baseFont * 0.85}px; margin-bottom: 8px; font-family: ${fontStack};" for="trade_date">Trade Date</label>
+                    <input type="date" name="trade_date" id="trade_date" required ${freezeDate ? 'disabled' : ''} value="${freezeDate ? frozenDate : ''}" style="width: 100%; padding: 10px; background: ${freezeDate ? secondaryColor + '40' : bgColor}; border: 1px solid ${secondaryColor}; border-radius: 6px; color: ${textColor}; font-size: ${baseFont}px; font-family: ${fontStack}; ${freezeDate ? 'opacity: 0.6;' : ''}">
+                  </div>
+                  <div>
+                    <label style="display: block; font-size: ${baseFont * 0.85}px; margin-bottom: 8px; font-family: ${fontStack};" for="profit_loss">Profit/Loss</label>
+                    <input type="number" step="0.01" name="profit_loss" id="profit_loss" required placeholder="Enter + for profit, - for loss" style="width: 100%; padding: 10px; background: ${bgColor}; border: 1px solid ${secondaryColor}; border-radius: 6px; color: ${textColor}; font-size: ${baseFont}px; font-family: ${fontStack};">
+                  </div>
+                </div>
+                <div style="display: flex; gap: 12px;">
+                  <button type="submit" style="background: ${primaryColor}; color: white; padding: 10px 20px; border: none; border-radius: 6px; font-size: ${baseFont}px; font-weight: 600; cursor: pointer; font-family: ${fontStack};">
+                    Add Trade
+                  </button>
+                  <button type="button" id="cancelBtn" style="background: ${secondaryColor}; color: white; padding: 10px 20px; border: none; border-radius: 6px; font-size: ${baseFont}px; font-weight: 600; cursor: pointer; font-family: ${fontStack};">
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            </div>
+          ` : ''}
+
+          <!-- Trades List -->
+          ${trades.length > 0 ? `
+            <div style="background: ${surfaceColor}; padding: 24px; border-radius: 12px;">
+              <h3 style="font-size: ${baseFont * 1.25}px; font-weight: 600; margin: 0 0 20px 0; font-family: ${fontStack};">Trade History</h3>
+              <div style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse;">
+                  <thead>
+                    <tr style="border-bottom: 2px solid ${bgColor};">
+                      <th style="text-align: left; padding: 12px; font-size: ${baseFont * 0.85}px; font-weight: 600; font-family: ${fontStack};">Date</th>
+                      <th style="text-align: right; padding: 12px; font-size: ${baseFont * 0.85}px; font-weight: 600; font-family: ${fontStack};">P/L</th>
+                      <th style="text-align: center; padding: 12px; font-size: ${baseFont * 0.85}px; font-weight: 600; font-family: ${fontStack};">Result</th>
+                      <th style="text-align: center; padding: 12px; font-size: ${baseFont * 0.85}px; font-weight: 600; font-family: ${fontStack};">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${trades.map(trade => `
+                      <tr class="trade-row" style="border-bottom: 1px solid ${bgColor};" data-trade-id="${trade.id}">
+                        <td style="padding: 12px; font-size: ${baseFont * 0.85}px; font-family: ${fontStack};">
+                          ${new Date(trade.timestamp).toLocaleDateString()}
+                        </td>
+                        <td style="padding: 12px; text-align: right; font-size: ${baseFont * 0.85}px; font-weight: 600; color: ${trade.profit_loss >= 0 ? '#10b981' : '#ef4444'}; font-family: ${fontStack};">
+                          ${trade.profit_loss >= 0 ? '+' : ''}${trade.profit_loss.toFixed(2)}
+                        </td>
+                        <td style="padding: 12px; text-align: center; font-size: ${baseFont * 0.85}px; font-family: ${fontStack};">
+                          <span style="padding: 4px 12px; border-radius: 12px; font-weight: 600; background: ${trade.outcome === 'win' ? '#10b98120' : '#ef444420'}; color: ${trade.outcome === 'win' ? '#10b981' : '#ef4444'};">
+                            ${trade.outcome.toUpperCase()}
+                          </span>
+                        </td>
+                        <td style="padding: 12px; text-align: center;">
+                          <button class="delete-btn" data-trade-id="${trade.id}" style="background: ${secondaryColor}; color: white; padding: 6px 12px; border: none; border-radius: 6px; font-size: ${baseFont * 0.8}px; cursor: pointer; font-family: ${fontStack};">
+                            Delete
+                          </button>
+                        </td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ` : `
+            <div style="background: ${surfaceColor}; padding: 48px; border-radius: 12px; text-align: center;">
+              <div style="font-size: ${baseFont * 3}px; margin-bottom: 16px;">📈</div>
+              <h3 style="font-size: ${baseFont * 1.25}px; font-weight: 600; margin: 0 0 8px 0; font-family: ${fontStack};">No Trades Yet</h3>
+              <p style="font-size: ${baseFont * 0.9}px; opacity: 0.7; margin: 0; font-family: ${fontStack};">
+                Start logging your trades to see performance analytics and optimization recommendations
+              </p>
+            </div>
+          `}
+
+          <!-- Designer Credit -->
+          <div style="text-align: center; margin-top: 48px; padding: 24px; border-top: 1px solid ${secondaryColor}40;">
+            <p style="font-size: ${baseFont * 0.8}px; opacity: 0.6; margin: 0; font-family: ${fontStack};">
+              Designed by JAISAL BHATIA
+            </p>
+          </div>
+        </div>
+
+        <!-- Floating Calculator Button -->
+        <button id="calculatorBtn" style="position: fixed; bottom: 24px; right: 24px; width: 56px; height: 56px; background: ${primaryColor}; color: white; border: none; border-radius: 50%; font-size: 24px; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 1000; display: flex; align-items: center; justify-content: center;">
+          🧮
+        </button>
+
+        ${showDayAnalyzer ? `
+          <div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1001; display: flex; align-items: center; justify-content: center; padding: 20px;">
+            <div style="background: ${surfaceColor}; padding: 24px; border-radius: 12px; width: 100%; max-width: 900px; max-height: 90%; overflow-y: auto;">
+              <div style="display: flex; justify-content: between; align-items: center; margin-bottom: 20px;">
+                <h3 style="font-size: ${baseFont * 1.25}px; font-weight: 600; margin: 0; font-family: ${fontStack};">📊 Day Analyzer</h3>
+                <button id="closeDayAnalyzer" style="background: none; border: none; color: ${textColor}; font-size: 24px; cursor: pointer; margin-left: auto;">×</button>
+              </div>
+
+              <div style="margin-bottom: 24px;">
+                <label style="display: block; font-size: ${baseFont * 0.85}px; margin-bottom: 8px; font-family: ${fontStack};" for="analysis-date">Select Date to Analyze</label>
+                <input type="date" id="analysis-date" value="${selectedAnalysisDate}" style="width: 100%; max-width: 200px; padding: 10px; background: ${bgColor}; border: 1px solid ${secondaryColor}; border-radius: 6px; color: ${textColor}; font-size: ${baseFont}px; font-family: ${fontStack};">
+              </div>
+
+              <div id="day-analysis-content">
+                ${(() => {
+                  const dayTrades = getDayTrades(selectedAnalysisDate);
+                  if (dayTrades.length === 0) {
+                    return `
+                      <div style="text-align: center; padding: 48px; background: ${bgColor}; border-radius: 8px;">
+                        <div style="font-size: ${baseFont * 2}px; margin-bottom: 16px;">📅</div>
+                        <h4 style="font-size: ${baseFont * 1.1}px; font-weight: 600; margin: 0 0 8px 0; font-family: ${fontStack};">No Trades Found</h4>
+                        <p style="font-size: ${baseFont * 0.9}px; opacity: 0.7; margin: 0; font-family: ${fontStack};">
+                          No trades were recorded on ${new Date(selectedAnalysisDate).toLocaleDateString()}
+                        </p>
+                      </div>
+                    `;
+                  }
+
+                  const progressiveData = calculateProgressiveMetrics(dayTrades);
+                  const dayMetrics = calculateMetrics(dayTrades);
+
+                  return `
+                    <div style="background: ${bgColor}; padding: 20px; border-radius: 8px; margin-bottom: 24px;">
+                      <h4 style="font-size: ${baseFont * 1.1}px; font-weight: 600; margin: 0 0 16px 0; font-family: ${fontStack};">
+                        Day Summary - ${new Date(selectedAnalysisDate).toLocaleDateString()}
+                      </h4>
+                      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 16px;">
+                        <div style="text-align: center;">
+                          <div style="font-size: ${baseFont * 0.8}px; opacity: 0.7; margin-bottom: 4px; font-family: ${fontStack};">Total Trades</div>
+                          <div style="font-size: ${baseFont * 1.2}px; font-weight: 600; font-family: ${fontStack};">${dayMetrics.totalTrades}</div>
+                        </div>
+                        <div style="text-align: center;">
+                          <div style="font-size: ${baseFont * 0.8}px; opacity: 0.7; margin-bottom: 4px; font-family: ${fontStack};">Win Rate</div>
+                          <div style="font-size: ${baseFont * 1.2}px; font-weight: 600; font-family: ${fontStack};">${dayMetrics.winRate.toFixed(1)}%</div>
+                        </div>
+                        <div style="text-align: center;">
+                          <div style="font-size: ${baseFont * 0.8}px; opacity: 0.7; margin-bottom: 4px; font-family: ${fontStack};">Day P/L</div>
+                          <div style="font-size: ${baseFont * 1.2}px; font-weight: 600; color: ${dayMetrics.totalPL >= 0 ? '#10b981' : '#ef4444'}; font-family: ${fontStack};">
+                            ${dayMetrics.totalPL >= 0 ? '+' : ''}${dayMetrics.totalPL.toFixed(2)}
+                          </div>
+                        </div>
+                        <div style="text-align: center;">
+                          <div style="font-size: ${baseFont * 0.8}px; opacity: 0.7; margin-bottom: 4px; font-family: ${fontStack};">Risk:Reward</div>
+                          <div style="font-size: ${baseFont * 1.2}px; font-weight: 600; font-family: ${fontStack};">1:${dayMetrics.avgRiskReward.toFixed(2)}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style="background: ${bgColor}; padding: 20px; border-radius: 8px;">
+                      <h4 style="font-size: ${baseFont * 1.1}px; font-weight: 600; margin: 0 0 16px 0; font-family: ${fontStack};">
+                        Progressive Analysis & Strategy Changes
+                      </h4>
+                      <div style="overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse; min-width: 800px;">
+                          <thead>
+                            <tr style="border-bottom: 2px solid ${surfaceColor};">
+                              <th style="text-align: left; padding: 8px; font-size: ${baseFont * 0.8}px; font-weight: 600; font-family: ${fontStack};">Trade #</th>
+                              <th style="text-align: center; padding: 8px; font-size: ${baseFont * 0.8}px; font-weight: 600; font-family: ${fontStack};">Time</th>
+                              <th style="text-align: right; padding: 8px; font-size: ${baseFont * 0.8}px; font-weight: 600; font-family: ${fontStack};">P/L</th>
+                              <th style="text-align: center; padding: 8px; font-size: ${baseFont * 0.8}px; font-weight: 600; font-family: ${fontStack};">Win Rate</th>
+                              <th style="text-align: center; padding: 8px; font-size: ${baseFont * 0.8}px; font-weight: 600; font-family: ${fontStack};">New Stop</th>
+                              <th style="text-align: center; padding: 8px; font-size: ${baseFont * 0.8}px; font-weight: 600; font-family: ${fontStack};">New Target</th>
+                              <th style="text-align: left; padding: 8px; font-size: ${baseFont * 0.8}px; font-weight: 600; font-family: ${fontStack};">Strategy Change</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            ${progressiveData.map((data, index) => {
+                              const prevData = index > 0 ? progressiveData[index - 1] : null;
+                              const stopChanged = !prevData || Math.abs(data.recommendedStop - prevData.recommendedStop) > 0.01;
+                              const targetChanged = !prevData || Math.abs(data.recommendedTarget - prevData.recommendedTarget) > 0.01;
+
+                              return `
+                                <tr style="border-bottom: 1px solid ${surfaceColor};">
+                                  <td style="padding: 8px; font-size: ${baseFont * 0.8}px; font-family: ${fontStack};">${data.tradeNumber}</td>
+                                  <td style="padding: 8px; text-align: center; font-size: ${baseFont * 0.8}px; font-family: ${fontStack};">
+                                    ${new Date(data.trade.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                                  </td>
+                                  <td style="padding: 8px; text-align: right; font-size: ${baseFont * 0.8}px; font-weight: 600; color: ${data.trade.profit_loss >= 0 ? '#10b981' : '#ef4444'}; font-family: ${fontStack};">
+                                    ${data.trade.profit_loss >= 0 ? '+' : ''}${data.trade.profit_loss.toFixed(2)}
+                                  </td>
+                                  <td style="padding: 8px; text-align: center; font-size: ${baseFont * 0.8}px; font-family: ${fontStack};">
+                                    ${data.cumulativeMetrics.winRate.toFixed(1)}%
+                                  </td>
+                                  <td style="padding: 8px; text-align: center; font-size: ${baseFont * 0.8}px; font-family: ${fontStack}; ${stopChanged ? `background: #f59e0b20; color: #f59e0b; font-weight: 600;` : ''}">
+                                    ${data.recommendedStop.toFixed(2)} ${stopChanged ? '⚡' : ''}
+                                  </td>
+                                  <td style="padding: 8px; text-align: center; font-size: ${baseFont * 0.8}px; font-family: ${fontStack}; ${targetChanged ? `background: #f59e0b20; color: #f59e0b; font-weight: 600;` : ''}">
+                                    ${data.recommendedTarget.toFixed(2)} ${targetChanged ? '⚡' : ''}
+                                  </td>
+                                  <td style="padding: 8px; font-size: ${baseFont * 0.75}px; font-family: ${fontStack}; max-width: 200px; word-wrap: break-word;">
+                                    ${(stopChanged || targetChanged) ? data.strategy : '—'}
+                                  </td>
+                                </tr>
+                              `;
+                            }).join('')}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div style="margin-top: 16px; padding: 12px; background: ${surfaceColor}; border-radius: 6px;">
+                        <div style="font-size: ${baseFont * 0.8}px; font-weight: 600; margin-bottom: 4px; color: #f59e0b; font-family: ${fontStack};">
+                          ⚡ Legend
+                        </div>
+                        <p style="font-size: ${baseFont * 0.75}px; opacity: 0.8; margin: 0; font-family: ${fontStack};">
+                          Highlighted cells with ⚡ indicate when stop loss or target recommendations changed after that trade
+                        </p>
+                      </div>
+                    </div>
+                  `;
+                })()}
+              </div>
+            </div>
+          </div>
+        ` : ''}
+
+        ${showCalculator ? `
+          <div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1001; display: flex; align-items: center; justify-content: center; padding: 20px;">
+            <div style="background: ${surfaceColor}; padding: 24px; border-radius: 12px; width: 100%; max-width: 400px; max-height: 90%; overflow-y: auto;">
+              <div style="display: flex; justify-content: between; align-items: center; margin-bottom: 20px;">
+                <h3 style="font-size: ${baseFont * 1.25}px; font-weight: 600; margin: 0; font-family: ${fontStack};">P&L Calculator</h3>
+                <button id="closeCalculator" style="background: none; border: none; color: ${textColor}; font-size: 24px; cursor: pointer; margin-left: auto;">×</button>
+              </div>
+
+              <form id="calculatorForm">
+                <div style="margin-bottom: 16px;">
+                  <label style="display: block; font-size: ${baseFont * 0.85}px; margin-bottom: 8px; font-family: ${fontStack};" for="buy_price">Buy Price</label>
+                  <input type="number" step="0.01" name="buy_price" id="buy_price" required placeholder="Enter buy price" style="width: 100%; padding: 10px; background: ${bgColor}; border: 1px solid ${secondaryColor}; border-radius: 6px; color: ${textColor}; font-size: ${baseFont}px; font-family: ${fontStack};">
+                </div>
+
+                <div style="margin-bottom: 16px;">
+                  <label style="display: block; font-size: ${baseFont * 0.85}px; margin-bottom: 8px; font-family: ${fontStack};" for="sell_price">Sell Price</label>
+                  <input type="number" step="0.01" name="sell_price" id="sell_price" required placeholder="Enter sell price" style="width: 100%; padding: 10px; background: ${bgColor}; border: 1px solid ${secondaryColor}; border-radius: 6px; color: ${textColor}; font-size: ${baseFont}px; font-family: ${fontStack};">
+                </div>
+
+                <div style="margin-bottom: 16px;">
+                  <label style="display: block; font-size: ${baseFont * 0.85}px; margin-bottom: 8px; font-family: ${fontStack};" for="quantity">Quantity</label>
+                  <input type="number" step="0.01" name="quantity" id="quantity" required placeholder="Enter quantity" style="width: 100%; padding: 10px; background: ${bgColor}; border: 1px solid ${secondaryColor}; border-radius: 6px; color: ${textColor}; font-size: ${baseFont}px; font-family: ${fontStack};">
+                </div>
+
+                <button type="submit" style="width: 100%; background: ${primaryColor}; color: white; padding: 12px; border: none; border-radius: 6px; font-size: ${baseFont}px; font-weight: 600; cursor: pointer; font-family: ${fontStack}; margin-bottom: 16px;">
+                  Calculate P&L
+                </button>
+              </form>
+
+              <div id="pnl-result"></div>
+
+              <div id="log-trade-section" style="display: none; margin-top: 16px;">
+                <label style="display: block; font-size: ${baseFont * 0.85}px; margin-bottom: 8px; font-family: ${fontStack};" for="calc-trade-date">Trade Date</label>
+                <input type="date" id="calc-trade-date" required style="width: 100%; padding: 10px; background: ${bgColor}; border: 1px solid ${secondaryColor}; border-radius: 6px; color: ${textColor}; font-size: ${baseFont * 0.9}px; font-family: ${fontStack}; margin-bottom: 12px;">
+                <button id="logTradeBtn" style="width: 100%; background: #10b981; color: white; padding: 12px; border: none; border-radius: 6px; font-size: ${baseFont}px; font-weight: 600; cursor: pointer; font-family: ${fontStack};">
+                  📝 Log This Trade
+                </button>
+              </div>
+            </div>
+          </div>
+        ` : ''}
+      `;
+
+      // Attach listeners after rendering
+      const toggleBtn = document.getElementById('toggleFormBtn');
+      if (toggleBtn) {
+        toggleBtn.addEventListener('click', () => {
+          showAddForm = !showAddForm;
+          render();
+          setTimeout(()=> {
+            const d = document.getElementById('trade_date');
+            if (d) d.focus();
+          }, 50);
+        });
+      }
+
+      const form = document.getElementById('addTradeForm');
+      if (form) form.addEventListener('submit', addTrade);
+
+      const cancelBtn = document.getElementById('cancelBtn');
+      if (cancelBtn) cancelBtn.addEventListener('click', () => {
+        showAddForm = false;
+        render();
+      });
+
+      const deleteButtons = document.querySelectorAll('.delete-btn');
+      deleteButtons.forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const tradeId = e.target.dataset.tradeId;
+          const trade = trades.find(t => t.id === tradeId);
+          if (trade) deleteTrade(trade);
+        });
+      });
+
+      const freezeCheckbox = document.getElementById('freezeDateCheckbox');
+      if (freezeCheckbox) {
+        freezeCheckbox.addEventListener('change', (e) => {
+          if (e.target.checked) {
+            const dateInput = document.getElementById('trade_date');
+            if (dateInput.value) {
+              freezeDate = true;
+              frozenDate = dateInput.value;
+              render();
+            } else {
+              e.target.checked = false;
+              alert('Please select a date first before freezing');
+            }
+          } else {
+            freezeDate = false;
+            frozenDate = '';
+            render();
+          }
+        });
+      }
+
+      const unfreezeBtn = document.getElementById('unfreezeBtn');
+      if (unfreezeBtn) {
+        unfreezeBtn.addEventListener('click', () => {
+          freezeDate = false;
+          frozenDate = '';
+          render();
+        });
+      }
+
+      const dayAnalyzerBtn = document.getElementById('dayAnalyzerBtn');
+      if (dayAnalyzerBtn) {
+        dayAnalyzerBtn.addEventListener('click', () => {
+          showDayAnalyzer = true;
+          render();
+        });
+      }
+
+      const closeDayAnalyzer = document.getElementById('closeDayAnalyzer');
+      if (closeDayAnalyzer) {
+        closeDayAnalyzer.addEventListener('click', () => {
+          showDayAnalyzer = false;
+          render();
+        });
+      }
+
+      const analysisDateInput = document.getElementById('analysis-date');
+      if (analysisDateInput) {
+        analysisDateInput.addEventListener('change', (e) => {
+          selectedAnalysisDate = e.target.value;
+          render();
+        });
+      }
+
+      const calculatorBtn = document.getElementById('calculatorBtn');
+      if (calculatorBtn) {
+        calculatorBtn.addEventListener('click', () => {
+          showCalculator = true;
+          render();
+        });
+      }
+
+      const closeCalculator = document.getElementById('closeCalculator');
+      if (closeCalculator) {
+        closeCalculator.addEventListener('click', () => {
+          showCalculator = false;
+          calculatedPnL = 0;
+          render();
+        });
+      }
+
+      const calculatorForm = document.getElementById('calculatorForm');
+      if (calculatorForm) {
+        calculatorForm.addEventListener('submit', calculatePnL);
+        const inputs = calculatorForm.querySelectorAll('input');
+        inputs.forEach(input => {
+          input.addEventListener('input', () => {
+            const buyPrice = parseFloat(calculatorForm.buy_price.value);
+            const sellPrice = parseFloat(calculatorForm.sell_price.value);
+            const quantity = parseFloat(calculatorForm.quantity.value);
+
+            if (!isNaN(buyPrice) && !isNaN(sellPrice) && !isNaN(quantity)) {
+              const pnl = (sellPrice - buyPrice) * quantity;
+              const pnlPercentage = ((sellPrice - buyPrice) / buyPrice) * 100;
+
+              calculatedPnL = pnl;
+
+              const resultDiv = document.getElementById('pnl-result');
+              if (resultDiv) {
+                resultDiv.innerHTML = `
+                  <div style="text-align: center; padding: 16px; background: ${pnl >= 0 ? '#10b98120' : '#ef444420'}; border-radius: 8px; margin-top: 16px;">
+                    <div style="font-size: 18px; font-weight: 700; color: ${pnl >= 0 ? '#10b981' : '#ef4444'};">
+                      ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+                    </div>
+                    <div style="font-size: 14px; opacity: 0.8; margin-top: 4px;">
+                      ${pnlPercentage >= 0 ? '+' : ''}${pnlPercentage.toFixed(2)}%
+                    </div>
+                  </div>
+                `;
+              }
+
+              const logSection = document.getElementById('log-trade-section');
+              if (logSection) {
+                logSection.style.display = 'block';
+                const dateInput = document.getElementById('calc-trade-date');
+                if (dateInput && !dateInput.value) {
+                  dateInput.value = new Date().toISOString().split('T')[0];
+                }
+              }
+            }
+          });
+        });
+      }
+
+      const logTradeBtn = document.getElementById('logTradeBtn');
+      if (logTradeBtn) logTradeBtn.addEventListener('click', logCalculatedTrade);
+
+      const downloadBackupBtn = document.getElementById('downloadBackupBtn');
+      if (downloadBackupBtn) downloadBackupBtn.addEventListener('click', downloadBackup);
+
+      const uploadBackupInput = document.getElementById('uploadBackup');
+      if (uploadBackupInput) uploadBackupInput.addEventListener('change', uploadBackup);
+    }
+
+    // initialize
+    async function initializeApp() {
+      const initResult = await window.dataSdk.init(dataHandler);
+      if (!initResult.isOk) {
+        console.error("Failed to initialize data SDK");
+      }
+      render();
+    }
+
+    initializeApp();
+  </script>
+</body>
+</html>
